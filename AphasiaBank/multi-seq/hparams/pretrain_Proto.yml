@@ -4,7 +4,7 @@
 # Decoder: Transformer Decoder + (CTC/ATT joint) beamsearch
 # Augmentation: SpecAugment
 # ################################
-
+loss_asr_weight: 0.5  # loss_asr_weight_PLACEHOLDER
 # Seed needs to be set at top of yaml, before objects with parameters are made
 seed: 2000
 
@@ -24,7 +24,7 @@ output_folder: !ref ISresults/full_FT_MTL_proto/S2S-hubert-Transformer-<output_n
 wer_file: !ref <output_folder>/wer.txt
 save_folder: !ref <output_folder>/save
 train_log: !ref <output_folder>/train_log.txt
-data_dir: /scratch/emilykmp_root/emilykmp1/mkperez/speechbrain/AphasiaBank/data/Proto-clinical/mtl_paraphasia
+data_dir: /data/kekeliu/data/Proto-clinical/mtl_paraphasia
 data_folder: !ref <data_dir>
 
 tb_logs: !ref <output_folder>/tb_logs

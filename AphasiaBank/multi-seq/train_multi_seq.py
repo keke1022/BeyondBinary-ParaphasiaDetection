@@ -22,14 +22,9 @@ Authors
 """
 
 from torch.utils.data import DataLoader
+import torch.nn as nn
 from speechbrain.dataio.dataloader import LoopedLoader
-import numpy as np
-from scipy.io import wavfile
-import wave
 from tqdm import tqdm
-import librosa
-import pandas as pd
-import math
 import os
 import sys
 import torch
@@ -39,9 +34,6 @@ import speechbrain as sb
 # import speechbrain.speechbrain as sb
 from speechbrain.utils.distributed import run_on_main
 from hyperpyyaml import load_hyperpyyaml
-from pathlib import Path
-from datasets import load_dataset, load_metric, Audio
-import re
 import time
 from speechbrain.tokenizers.SentencePiece import SentencePiece
 
@@ -59,6 +51,27 @@ logger = logging.getLogger(__name__)
 torch.autograd.set_detect_anomaly(True)
 
 
+class RNNVote(nn.Module):
+    def __init__(self, num_classes, embedding_dim, hidden_size, output_size, num_layers=1):
+        super(RNNVote, self).__init__()
+        self.embedding = nn.Embedding(num_classes, embedding_dim)
+        self.rnn = nn.RNN(embedding_dim, hidden_size, num_layers, batch_first=True)
+        self.fc = nn.Linear(hidden_size, output_size)
+
+    def forward(self, x):
+        x = self.embedding(x)  # shape of x: (batch_size, sequence_length) -> (batch_size, sequence_length, embedding_dim)
+        _, hidden = self.rnn(x)
+        output = self.fc(hidden[-1])
+        return output
+
+# TODO: add to hparams
+num_classes = 10
+embedding_dim = 50
+hidden_size = 128
+output_size = num_classes
+rnn_vote = RNNVote(num_classes, embedding_dim, hidden_size, output_size)
+
+
 def props(cls):
     return [i for i in cls.__dict__.keys() if i[:1] != "_"]
 
@@ -67,7 +80,13 @@ def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
-def find_majority_element(lst):
+def find_majority_element(lst, use_RNN=False):
+    import pdb; pdb.set_trace()
+    if use_RNN:
+        lst_tensor = torch.tensor(lst).unsqueeze(0)
+        final_output = rnn_vote(lst_tensor)
+        return final_output.argmax().item()
+
     counts = {}
     for num in lst:
         counts[num] = counts.get(num, 0) + 1

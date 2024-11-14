@@ -2,7 +2,7 @@
 
 ## Pretrain with Protocol Dataset
 ```
-python train_multi-seq.py hparams/pretrain_Proto.yml
+python train_multi_seq.py hparams/pretrain_Proto.yml
 ```
 
 ## Finetune with Scripts Dataset
