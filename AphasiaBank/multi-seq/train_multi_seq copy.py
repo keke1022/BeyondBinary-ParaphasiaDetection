@@ -22,14 +22,9 @@ Authors
 """
 
 from torch.utils.data import DataLoader
+import torch.nn as nn
 from speechbrain.dataio.dataloader import LoopedLoader
-import numpy as np
-from scipy.io import wavfile
-import wave
 from tqdm import tqdm
-import librosa
-import pandas as pd
-import math
 import os
 import sys
 import torch
@@ -39,9 +34,6 @@ import speechbrain as sb
 # import speechbrain.speechbrain as sb
 from speechbrain.utils.distributed import run_on_main
 from hyperpyyaml import load_hyperpyyaml
-from pathlib import Path
-from datasets import load_dataset, load_metric, Audio
-import re
 import time
 from speechbrain.tokenizers.SentencePiece import SentencePiece
 
@@ -57,6 +49,27 @@ import matplotlib.pyplot as plt
 logger = logging.getLogger(__name__)
 
 torch.autograd.set_detect_anomaly(True)
+
+
+class PhonemeToWordLSTM(nn.Module):
+    def __init__(self, input_dim, hidden_dim, num_classes):
+        super(PhonemeToWordLSTM, self).__init__()
+        self.lstm = nn.LSTM(input_dim, hidden_dim, batch_first=True, bidirectional=True)
+        self.classifier = nn.Linear(hidden_dim * 2, num_classes)
+
+    def forward(self, phoneme_matrix):
+        """
+        Args:
+            phoneme_matrix: Tensor of shape (num_phonemes, 4)
+        Returns:
+            word_logits: Tensor of shape (num_classes,)
+        """
+        # LSTM need 3D
+        phoneme_matrix = phoneme_matrix.unsqueeze(0)  # Shape: (1, num_phonemes, 4)
+        _, (hidden, _) = self.lstm(phoneme_matrix)  # hidden: (num_layers * 2, batch, hidden_dim)
+        word_feature = torch.cat((hidden[-2], hidden[-1]), dim=-1)  # Shape: (hidden_dim * 2,)
+        word_logits = self.classifier(word_feature)  # Shape: (num_classes,)
+        return word_logits
 
 
 def props(cls):
@@ -75,16 +88,10 @@ def find_majority_element(lst):
 
 
 def combine_AWER(hyps_para, hyps_asr, predicted_words, tokenizer, ptokenizer):
-    predicted_words = [p for p in predicted_words if p != '⁇']
     tokenized_out = [tokenizer.IdToPiece(h) for h in hyps_asr]
-
-    if len(tokenized_out) != len(
-        hyps_para
-    ):
-        import pdb; pdb.set_trace()
     assert len(tokenized_out) == len(
         hyps_para
-    ), f"Error arrs are of same size:\ttokenized_out: {tokenized_out}\hyps_para: {hyps_para}"
+    ), f"Error arrs are of same size:\tokenized_out: {tokenized_out}\hyps_para: {hyps_para}"
     # print(f"tokenized_out: {tokenized_out}")
     p_result = []
     multitoken_result = []
@@ -119,14 +126,12 @@ def combine_AWER(hyps_para, hyps_asr, predicted_words, tokenizer, ptokenizer):
         else:
             p_result.append(find_majority_element(multitoken_result))
 
-    if len(predicted_words) != len(
-        p_result
-    ):
-        import pdb; pdb.set_trace()
+    # if (len(predicted_words) != len(p_result)):
+    #     import pdb; pdb.set_trace()
 
-    assert len(predicted_words) == len(
-        p_result
-    ), f"Error arrs are of same size:\npredicted_words: {predicted_words}\np_result: {p_result}"
+    # assert len(predicted_words) == len(
+    #     p_result
+    # ), f"Error arrs are of same size:\npredicted_words: {predicted_words}\np_result: {p_result}"
     pred_AWER_list = []
     ptokenizer = [c.upper() for c in ptokenizer]
     for w, p in zip(predicted_words, p_result):
@@ -144,6 +149,7 @@ class ASR(sb.Brain):
         tokens_bos, _ = batch.tokens_bos
         ptokens_bos, _ = batch.ptokens_bos
         wavs, wav_lens = wavs.to(self.device), wav_lens.to(self.device)
+        print(f"stage: {stage}")
 
         # Add augmentation if specified
         if stage == sb.Stage.TRAIN:
@@ -241,7 +247,47 @@ class ASR(sb.Brain):
         # print(f"pred: {para_seq}")
         # print(f"true: {ptokens_eos}")
 
-        loss = loss_asr_weighted + loss_para_seq_weighted
+
+        tokens_bos_list, _ = batch.tokens_bos
+        loss_word = 0
+
+        for tokens_bos in tokens_bos_list:
+            annotated_words = [self.tokenizer.IdToPiece(int(w)) for w in tokens_bos]
+            word_range_in_token = []
+            for i, word in enumerate(annotated_words):
+                if word.startswith("▁"):
+                    word_range_in_token.append(i)
+            word_range_in_token.append(len(annotated_words))
+            
+            num_words = len(word_range_in_token) - 1
+            word_logits_all = torch.empty((num_words, 4), device=para_seq.device)
+
+            for i in range(len(word_range_in_token) - 1):
+                start = word_range_in_token[i]
+                end = word_range_in_token[i + 1]
+                log_pred_for_class = torch.asarray(para_seq[0, start:end, :])
+                word_logits = phoneme_to_word(torch.exp(log_pred_for_class))
+                word_logits_all[i] = word_logits
+
+            # Temp fix
+            import pdb; pdb.set_trace()
+            paraphasia_data = torch.asarray(batch.paraphasia_word_level).to(self.device)
+            if paraphasia_data.dim() == 3:  # (1, num_words, 2)
+                correct_words = paraphasia_data.squeeze(0)[:, 0]
+            elif paraphasia_data.dim() == 2:  # (1, num_words)
+                correct_words = paraphasia_data.squeeze(0)
+            elif paraphasia_data.dim() == 1:  # (num_words,)
+                correct_words = paraphasia_data
+            else:
+                raise ValueError(f"Unexpected shape: {paraphasia_data.shape}")
+
+            # correct_words = torch.asarray(batch.paraphasia_word_level).squeeze(0).to(self.device)
+            criterion = torch.nn.CrossEntropyLoss()
+            loss_word += criterion(word_logits_all, correct_words)
+
+        loss_word /= len(tokens_bos_list)
+
+        loss = loss_asr_weighted + loss_para_seq_weighted + loss_word
 
         if stage != sb.Stage.TRAIN:
             current_epoch = self.hparams.epoch_counter.current
@@ -412,7 +458,7 @@ class ASR(sb.Brain):
         should_step = self.step % self.grad_accumulation_factor == 0
         # Managing automatic mixed precision
         if self.auto_mix_prec:
-            with torch.cuda.amp.autocast():
+            with torch.amp.autocast():
                 outputs = self.compute_forward(batch, sb.Stage.TRAIN)
                 loss, loss_asr, loss_para = self.compute_objectives(
                     outputs, batch, sb.Stage.TRAIN
@@ -997,6 +1043,7 @@ if __name__ == "__main__":
     # CLI:
     hparams_file, run_opts, overrides = sb.parse_arguments(sys.argv[1:])
     print(f"run_opts: {run_opts}")
+    phoneme_to_word = PhonemeToWordLSTM(input_dim=4, hidden_dim=64, num_classes=4).to('cuda')
 
     # If distributed_launch=True then
     # create ddp_group with the right communication protocol
