@@ -78,18 +78,17 @@ def combine_AWER(hyps_para, hyps_asr, predicted_words, tokenizer, ptokenizer):
     predicted_words = [p for p in predicted_words if p != '⁇']
     tokenized_out = [tokenizer.IdToPiece(h) for h in hyps_asr]
 
-    if len(tokenized_out) != len(
-        hyps_para
-    ):
-        import pdb; pdb.set_trace()
+    if '<unk>' in tokenized_out:
+        print(f"UNK in tokenized_out: {tokenized_out}")
+        tokenized_out = [t if t != '<unk>' else '▁' for t in tokenized_out]
+
     assert len(tokenized_out) == len(
         hyps_para
     ), f"Error arrs are of same size:\ttokenized_out: {tokenized_out}\hyps_para: {hyps_para}"
-    # print(f"tokenized_out: {tokenized_out}")
+
     p_result = []
     multitoken_result = []
     for t, p in zip(tokenized_out, hyps_para):
-
         # end of multiword token
         if t == "▁":
             # start of multi-token word
@@ -119,11 +118,6 @@ def combine_AWER(hyps_para, hyps_asr, predicted_words, tokenizer, ptokenizer):
         else:
             p_result.append(find_majority_element(multitoken_result))
 
-    if len(predicted_words) != len(
-        p_result
-    ):
-        import pdb; pdb.set_trace()
-
     assert len(predicted_words) == len(
         p_result
     ), f"Error arrs are of same size:\npredicted_words: {predicted_words}\np_result: {p_result}"
@@ -133,7 +127,6 @@ def combine_AWER(hyps_para, hyps_asr, predicted_words, tokenizer, ptokenizer):
         pred_AWER_list.append(f"{w}/{ptokenizer[p]}")
 
     return [pred_AWER_list]
-
 
 # Define training procedure
 class ASR(sb.Brain):
@@ -218,14 +211,8 @@ class ASR(sb.Brain):
             ptokens_eos,
             length=ptokens_lens,
             weight=self.train_para_class_count.to(self.device)
-            # para_seq, ptokens_eos, length=ptokens_lens
         ).sum()
 
-        # Use ptokens_lens to mask out eos. Use ptokens_eos as labels to match predictions, eos will be masked
-        # print(f"loss_para_seq: {loss_para_seq}")
-        # print(f"loss_para_seq_no_bal: {loss_para_seq_no_bal}")
-        # print(f"ptokens: {ptokens}")
-        # exit()
         loss_asr = (
             self.hparams.ctc_weight * loss_ctc
             + (1 - self.hparams.ctc_weight) * loss_seq
@@ -235,11 +222,6 @@ class ASR(sb.Brain):
         loss_para_seq_weighted = (
             1 - self.hparams.loss_asr_weight
         ) * loss_para_seq
-        # print(self.train_para_class_count.to(self.device))
-        # print(f"asr: {loss_asr_weighted}")
-        # print(f"para_seq: {loss_para_seq} -> {loss_para_seq_weighted}\n")
-        # print(f"pred: {para_seq}")
-        # print(f"true: {ptokens_eos}")
 
         loss = loss_asr_weighted + loss_para_seq_weighted
 
@@ -483,12 +465,8 @@ class ASR(sb.Brain):
     def make_dataloader(
         self, dataset, stage, ckpt_prefix="dataloader-", **loader_kwargs
     ):
-        # TRAIN stage is handled specially.
-        # if stage == sb.Stage.TRAIN:
-        #     loader_kwargs = self._train_loader_specifics(dataset, loader_kwargs)
         if stage == sb.Stage.TRAIN or stage == sb.Stage.TEST:
             loader_kwargs = self._train_loader_specifics(dataset, loader_kwargs)
-        # loader_kwargs = self._train_loader_specifics(dataset, loader_kwargs)
 
         dataloader = sb.dataio.dataloader.make_dataloader(
             dataset, **loader_kwargs
@@ -1058,7 +1036,6 @@ if __name__ == "__main__":
     }
 
     if sb.utils.distributed.if_main_process():
-        # print(f"tokenizer: {tokens} | {len(tokens.keys())}")
         count_parameters(asr_brain.modules)
 
     asr_brain.tb = SummaryWriter(hparams["tb_logs"])
@@ -1077,7 +1054,6 @@ if __name__ == "__main__":
     print(asr_brain.train_para_class_count)
     asr_brain.train_para_class_count = torch.tensor([1.0, 2.0, 4.0, 8.0])
     print(asr_brain.train_para_class_count)
-    # exit()
 
     # with torch.autograd.detect_anomaly():
     if hparams["train_flag"]:
